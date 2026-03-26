@@ -69,7 +69,7 @@ defmodule OpentelemetryNebulex do
     attributes =
       %{
         :"nebulex.cache" => metadata.adapter_meta.cache,
-        Trace.db_system() => metadata.adapter_meta[:backend],
+        Trace.db_system() => metadata.adapter_meta[:backend] || "redis",
         Trace.db_operation() => db_operation(metadata),
         Trace.db_statement() => db_statement(metadata)
       }
