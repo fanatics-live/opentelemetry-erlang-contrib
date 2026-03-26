@@ -1,7 +1,7 @@
 defmodule OpentelemetryRedix.MixProject do
   use Mix.Project
 
-  @version "0.1.1"
+  @version "0.2.0"
 
   def project do
     [
@@ -60,7 +60,7 @@ defmodule OpentelemetryRedix.MixProject do
       {:opentelemetry, "~> 1.0", only: [:dev, :test]},
       {:opentelemetry_api, "~> 1.0"},
       {:opentelemetry_process_propagator, "~> 0.3"},
-      {:opentelemetry_semantic_conventions, "~> 0.2"},
+      {:opentelemetry_semantic_conventions, "~> 1.27"},
       {:opentelemetry_exporter, "~> 1.0", only: [:dev, :test]},
       {:redix, "~> 1.0", only: [:dev, :test]},
       {:telemetry, "~> 0.4 or ~> 1.0"}
