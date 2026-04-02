@@ -29,4 +29,9 @@ defmodule TestBroadway do
   def handle_batch(_batcher, messages, _batch_info, _context) do
     messages
   end
+
+  @impl true
+  def handle_failed(messages, _context) do
+    messages
+  end
 end

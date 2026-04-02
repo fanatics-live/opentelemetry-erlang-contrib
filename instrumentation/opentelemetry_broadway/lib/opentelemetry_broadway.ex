@@ -61,6 +61,8 @@ defmodule OpentelemetryBroadway do
       )
   """
 
+  require OpenTelemetry.Tracer
+
   alias OpenTelemetry.Ctx
   alias OpenTelemetry.Tracer
   alias OpenTelemetry.Span
@@ -157,6 +159,50 @@ defmodule OpentelemetryBroadway do
     )
 
     :ok
+  end
+
+  @doc """
+  Wraps a single failed message's handling in an OTel span linked to the original
+  processing span via trace context extracted from the message headers.
+
+  Use this in `handle_failed/2` callbacks to get trace continuity between the
+  original message processing span and any retry or dead-letter routing that follows.
+
+      @impl Broadway
+      def handle_failed(messages, _context) do
+        Enum.each(messages, fn message ->
+          OpentelemetryBroadway.with_failed_message_span(message, __MODULE__, fn ->
+            # retry or DLQ logic — set additional attributes with Tracer.set_attributes/1
+          end)
+        end)
+        messages
+      end
+
+  The span is named `"\#{inspect(topology_name)} settle"`, has kind `:producer`,
+  and carries `messaging.system` and `messaging.operation.type` per OTel SemConv.
+  A link back to the original span is created when `traceparent` is present in
+  the message headers.
+  """
+  @spec with_failed_message_span(Broadway.Message.t(), module(), (-> result)) :: result
+        when result: term()
+  def with_failed_message_span(%Broadway.Message{} = message, topology_name, fun)
+      when is_function(fun, 0) do
+    span_name = "#{inspect(topology_name)} settle"
+    links = link_from_propagated_ctx(message)
+
+    span_opts =
+      %{
+        kind: :producer,
+        attributes: %{
+          MessagingAttributes.messaging_system() => :rabbitmq,
+          MessagingAttributes.messaging_operation_type() => :settle
+        }
+      }
+      |> put_links(links)
+
+    Tracer.with_span span_name, span_opts do
+      fun.()
+    end
   end
 
   @doc false

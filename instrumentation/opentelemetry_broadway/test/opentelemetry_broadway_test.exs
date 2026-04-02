@@ -47,11 +47,10 @@ defmodule OpentelemetryBroadwayTest do
                       status: ^expected_status
                     )}
 
-    assert %{
-             "messaging.system": :broadway,
-             "messaging.operation": :process,
-             "messaging.message_payload_size_bytes": 7
-           } = :otel_attributes.map(attributes)
+    attrs = :otel_attributes.map(attributes)
+    assert attrs[:"messaging.system"] == :broadway
+    assert attrs[:"messaging.operation.type"] == :process
+    assert attrs[:"messaging.message.body.size"] == 7
   end
 
   test "records span on message which fails" do
@@ -88,15 +87,15 @@ defmodule OpentelemetryBroadwayTest do
 
   test "extracts trace context from RabbitMQ headers when propagation enabled" do
     TestHelpers.remove_handlers()
-    :ok = OpentelemetryBroadway.setup(propagation: true)
+    :ok = OpentelemetryBroadway.setup(span_relationship: :link)
 
     _parent_span_ctx =
       OpenTelemetry.Tracer.start_span("upstream-service")
       |> OpenTelemetry.Tracer.set_current_span()
 
     trace_ctx = OpenTelemetry.Tracer.current_span_ctx()
-    trace_id = elem(trace_ctx, 1)
-    span_id = elem(trace_ctx, 2)
+    trace_id = span_ctx(trace_ctx, :trace_id)
+    span_id = span_ctx(trace_ctx, :span_id)
 
     OpenTelemetry.Tracer.end_span()
     OpenTelemetry.Ctx.clear()
@@ -147,7 +146,7 @@ defmodule OpentelemetryBroadwayTest do
 
     attrs_map = :otel_attributes.map(attributes)
     assert attrs_map[:"messaging.system"] == :broadway
-    assert attrs_map[:"messaging.operation"] == :process
+    assert attrs_map[:"messaging.operation.type"] == :process
 
     links_list = elem(links, 5)
     assert length(links_list) == 1
@@ -158,14 +157,14 @@ defmodule OpentelemetryBroadwayTest do
 
   test "creates proper trace relationship when propagation enabled" do
     TestHelpers.remove_handlers()
-    :ok = OpentelemetryBroadway.setup(propagation: true)
+    :ok = OpentelemetryBroadway.setup(span_relationship: :link)
 
     # Create parent trace
     parent_span = OpenTelemetry.Tracer.start_span("parent-service")
     OpenTelemetry.Tracer.set_current_span(parent_span)
     parent_ctx = OpenTelemetry.Tracer.current_span_ctx()
-    parent_trace_id = elem(parent_ctx, 1)
-    parent_span_id = elem(parent_ctx, 2)
+    parent_trace_id = span_ctx(parent_ctx, :trace_id)
+    parent_span_id = span_ctx(parent_ctx, :span_id)
 
     # Create traceparent header from parent context
     traceparent =
@@ -227,7 +226,7 @@ defmodule OpentelemetryBroadwayTest do
 
   test "handles message without headers gracefully with propagation enabled" do
     TestHelpers.remove_handlers()
-    :ok = OpentelemetryBroadway.setup(propagation: true)
+    :ok = OpentelemetryBroadway.setup(span_relationship: :link)
 
     message = %Broadway.Message{
       data: "test message",
@@ -270,9 +269,68 @@ defmodule OpentelemetryBroadwayTest do
     assert length(links_list) == 0
   end
 
+  test "with_failed_message_span creates a settle span with link to original trace" do
+    parent_span = OpenTelemetry.Tracer.start_span("upstream-publisher")
+    OpenTelemetry.Tracer.set_current_span(parent_span)
+    parent_ctx = OpenTelemetry.Tracer.current_span_ctx()
+    parent_trace_id = span_ctx(parent_ctx, :trace_id)
+    parent_span_id = span_ctx(parent_ctx, :span_id)
+
+    traceparent =
+      "00-#{:io_lib.format("~32.16.0b", [parent_trace_id])}-#{:io_lib.format("~16.16.0b", [parent_span_id])}-01"
+
+    OpenTelemetry.Tracer.end_span()
+    OpenTelemetry.Ctx.clear()
+    assert_receive {:span, span(name: "upstream-publisher")}
+
+    message = %Broadway.Message{
+      data: "test",
+      metadata: %{headers: [{"traceparent", :longstr, traceparent}]},
+      acknowledger: {Broadway.NoopAcknowledger, nil, nil},
+      status: {:failed, :some_error}
+    }
+
+    OpentelemetryBroadway.with_failed_message_span(message, TestBroadway, fn ->
+      OpenTelemetry.Tracer.set_attributes([{:"custom.attr", "value"}])
+    end)
+
+    assert_receive {:span,
+                    span(
+                      name: "TestBroadway settle",
+                      kind: :producer,
+                      attributes: attributes,
+                      links: links
+                    )}
+
+    attrs = :otel_attributes.map(attributes)
+    assert attrs[:"messaging.system"] == :rabbitmq
+    assert attrs[:"messaging.operation.type"] == :settle
+    assert attrs[:"custom.attr"] == "value"
+
+    links_list = elem(links, 5)
+    assert length(links_list) == 1
+    [link] = links_list
+    assert elem(link, 1) == parent_trace_id
+    assert elem(link, 2) == parent_span_id
+  end
+
+  test "with_failed_message_span creates span with no links when no trace context in headers" do
+    message = %Broadway.Message{
+      data: "test",
+      metadata: %{headers: []},
+      acknowledger: {Broadway.NoopAcknowledger, nil, nil},
+      status: {:failed, :some_error}
+    }
+
+    OpentelemetryBroadway.with_failed_message_span(message, TestBroadway, fn -> :ok end)
+
+    assert_receive {:span, span(name: "TestBroadway settle", links: links)}
+    assert elem(links, 5) == []
+  end
+
   test "handles malformed headers gracefully with propagation enabled" do
     TestHelpers.remove_handlers()
-    :ok = OpentelemetryBroadway.setup(propagation: true)
+    :ok = OpentelemetryBroadway.setup(span_relationship: :link)
 
     message = %Broadway.Message{
       data: "test message",
