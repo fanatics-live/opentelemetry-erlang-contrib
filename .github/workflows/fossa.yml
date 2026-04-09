@@ -1,0 +1,27 @@
+name: FOSSA scanning
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  fossa:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27.2.4"
+          rebar3-version: "3.24.0"
+          elixir-version: "1.18.2"
+          version-type: "strict"
+
+      - uses: fossas/fossa-action@c414b9ad82eaad041e47a7cf62a4f02411f427a0 # v1.8.0
+        with:
+          api-key: ${{secrets.FOSSA_API_KEY}}
+          team: OpenTelemetry
