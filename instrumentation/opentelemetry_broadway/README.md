@@ -22,7 +22,7 @@ end
 
 ### With Trace Propagation
 
-For Broadway pipelines that need distributed tracing context extraction from message headers:
+For Broadway pipelines that need distributed tracing with linked spans across services (extracts context from message headers and creates trace links):
 
 ```elixir
 def start(_type, _args) do
@@ -33,43 +33,6 @@ def start(_type, _args) do
 end
 ```
 
-**Important**: When using trace propagation, your producer must be configured to extract headers. For RabbitMQ, your `BroadwayRabbitMQ.Producer` must be configured with `metadata: [:headers]` to extract trace context from message headers:
-
-```elixir
-Broadway.start_link(MyBroadway,
-  name: MyBroadway,
-  producer: [
-    module: {BroadwayRabbitMQ.Producer,
-      queue: "my_queue",
-      metadata: [:headers],  # Required for trace propagation!
-      connection: [
-        username: "user",
-        password: "password",
-        host: "localhost"
-      ]
-    }
-  ],
-  processors: [default: [concurrency: 10]]
-)
-```
-
-## Features
-
-### Basic Instrumentation
-
-- Creates spans for Broadway message processing
-- Tracks message processing duration
-- Records exceptions and failures
-- Adds semantic attributes for messaging operations
-
-### Enhanced Instrumentation (with propagation)
-
-All basic features plus:
-
-- **Automatic trace propagation**: Extracts distributed tracing context from message headers
-- **Parent trace linking**: Links to upstream traces when trace context is found
-- **Standards compliance**: Supports W3C Trace Context and other OpenTelemetry propagation formats
-
 ## Installation
 
 This library is available on Hex:
@@ -77,7 +40,7 @@ This library is available on Hex:
 ```elixir
 defp deps do
   [
-    {:opentelemetry_broadway, "~> 0.1"}
+    {:opentelemetry_broadway, "~> 0.3"}
   ]
 end
 ```

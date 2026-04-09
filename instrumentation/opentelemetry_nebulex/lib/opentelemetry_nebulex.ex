@@ -4,7 +4,8 @@ defmodule OpentelemetryNebulex do
   from Nebulex command events.
   """
 
-  require OpenTelemetry.SemanticConventions.Trace, as: Trace
+  alias OpenTelemetry.SemConv.Incubating.DBAttributes
+  alias OpentelemetryNebulex.NebulexAttributes
 
   @tracer_id __MODULE__
 
@@ -68,14 +69,13 @@ defmodule OpentelemetryNebulex do
 
     attributes =
       %{
-        :"nebulex.cache" => metadata.adapter_meta.cache,
-        Trace.db_system() => metadata.adapter_meta[:backend],
-        Trace.db_operation() => db_operation(metadata),
-        Trace.db_statement() => db_statement(metadata)
+        NebulexAttributes.nebulex_cache() => metadata.adapter_meta.cache,
+        DBAttributes.db_system() => metadata.adapter_meta[:backend],
+        DBAttributes.db_operation_name() => db_operation(metadata),
+        DBAttributes.db_query_text() => db_statement(metadata)
       }
-      |> maybe_put(:"nebulex.backend", metadata.adapter_meta[:backend])
-      |> maybe_put(:"nebulex.keyslot", metadata.adapter_meta[:keyslot])
-      |> maybe_put(:"nebulex.model", metadata.adapter_meta[:model])
+      |> maybe_put(NebulexAttributes.nebulex_keyslot(), metadata.adapter_meta[:keyslot])
+      |> maybe_put(NebulexAttributes.nebulex_model(), metadata.adapter_meta[:model])
 
     OpentelemetryTelemetry.start_telemetry_span(@tracer_id, span_name, metadata, %{
       attributes: attributes
@@ -87,7 +87,7 @@ defmodule OpentelemetryNebulex do
     ctx = OpentelemetryTelemetry.set_current_telemetry_span(@tracer_id, metadata)
 
     if action = extract_action(metadata) do
-      OpenTelemetry.Span.set_attribute(ctx, :"nebulex.action", action)
+      OpenTelemetry.Span.set_attribute(ctx, NebulexAttributes.nebulex_action(), action)
     end
 
     OpentelemetryTelemetry.end_telemetry_span(@tracer_id, metadata)

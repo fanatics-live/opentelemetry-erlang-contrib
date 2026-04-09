@@ -72,6 +72,7 @@ defmodule OpentelemetryBroadway do
   @fan_messaging_batch_successful_count :"fan.messaging.batch.successful_count"
   @fan_messaging_batch_failed_count :"fan.messaging.batch.failed_count"
 
+
   @options_schema [
     span_relationship: [
       type: {:in, [:child, :link, :none]},
@@ -82,6 +83,14 @@ defmodule OpentelemetryBroadway do
       * `:link` - Extract context and create span links for loose coupling (default)
       * `:none` - Disable context propagation entirely
       """
+    ],
+    propagation: [
+      type: :boolean,
+      deprecated: "Use `:span_relationship` instead. `propagation: true` maps to `span_relationship: :link`",
+      doc: """
+      When `true`, enables context propagation with span links (maps to `span_relationship: :link`).
+      When `false`, disables context propagation (maps to `span_relationship: :none`).
+      """
     ]
   ]
 
@@ -91,6 +100,7 @@ defmodule OpentelemetryBroadway do
   def options_schema do
     @options_schema
   end
+
 
   @doc """
   Attaches the Telemetry handlers, returning `:ok` if successful.
@@ -115,9 +125,10 @@ defmodule OpentelemetryBroadway do
 
   """
   @spec setup(unquote(NimbleOptions.option_typespec(@options_schema))) :: :ok
-  def setup(opts \\ []) do
+  def setup(opts \\ []) when is_list(opts) do
     config =
       opts
+      |> validate_deprecated_options()
       |> NimbleOptions.validate!(@nimble_options_schema)
       |> Enum.into(%{})
 
@@ -275,6 +286,7 @@ defmodule OpentelemetryBroadway do
     OpentelemetryTelemetry.end_telemetry_span(@tracer_id, metadata)
   end
 
+
   defp otel_status(%{status: :ok}), do: OpenTelemetry.status(:ok)
   defp otel_status(%{status: {:failed, err}}), do: OpenTelemetry.status(:error, format_error(err))
   defp otel_status(_), do: OpenTelemetry.status(:unset)
@@ -312,6 +324,22 @@ defmodule OpentelemetryBroadway do
   defp format_error(err) when is_binary(err), do: err
   defp format_error(err), do: inspect(err)
 
+  # Backwards compatibility: map deprecated `propagation` option to `span_relationship`
+  defp validate_deprecated_options(opts) do
+    if Keyword.has_key?(opts, :propagation) and Keyword.has_key?(opts, :span_relationship) do
+      raise ArgumentError,
+            "cannot use both :propagation and :span_relationship options. " <>
+              "Please use :span_relationship only as :propagation is deprecated"
+    end
+
+    case Keyword.pop(opts, :propagation) do
+      {true, opts} -> Keyword.put(opts, :span_relationship, :link)
+      {false, opts} -> Keyword.put(opts, :span_relationship, :none)
+      {nil, opts} -> opts
+    end
+  end
+
+
   # Context propagation helpers - following OpentelemetryGrpc.Server pattern
 
   defp put_links(span_opts, []) do
@@ -341,6 +369,7 @@ defmodule OpentelemetryBroadway do
     |> Enum.flat_map(&link_from_propagated_ctx/1)
     |> Enum.uniq_by(& &1.trace_id)
   end
+
 
   defp extract_and_attach(message) do
     case get_propagated_ctx(message) do

@@ -88,32 +88,28 @@ defmodule OpentelemetryBroadwayTest do
 
   test "extracts trace context from RabbitMQ headers when propagation enabled" do
     TestHelpers.remove_handlers()
-    :ok = OpentelemetryBroadway.setup(span_relationship: :link)
+    :ok = OpentelemetryBroadway.setup(propagation: true)
 
     _parent_span_ctx =
       OpenTelemetry.Tracer.start_span("upstream-service")
       |> OpenTelemetry.Tracer.set_current_span()
 
     trace_ctx = OpenTelemetry.Tracer.current_span_ctx()
-    # span_ctx record: {span_ctx, trace_id, hex_trace_id, span_id, hex_span_id, ...}
-    trace_id = elem(trace_ctx, 1)          # integer trace_id
-    hex_trace_id = elem(trace_ctx, 2)      # hex string trace_id
-    span_id = elem(trace_ctx, 3)           # integer span_id
-    hex_span_id = elem(trace_ctx, 4)       # hex string span_id
+    trace_id = elem(trace_ctx, 1)
+    hex_trace_id = elem(trace_ctx, 2)
+    span_id = elem(trace_ctx, 3)
+    hex_span_id = elem(trace_ctx, 4)
 
     OpenTelemetry.Tracer.end_span()
     OpenTelemetry.Ctx.clear()
 
     assert_receive {:span, span(name: "upstream-service")}
 
-    # Format traceparent header using hex strings
-    traceparent = "00-#{hex_trace_id}-#{hex_span_id}-01"
-
     message = %Broadway.Message{
       data: "test message",
       metadata: %{
         headers: [
-          {"traceparent", :longstr, traceparent},
+          {"traceparent", :longstr, "00-#{hex_trace_id}-#{hex_span_id}-01"},
           {"x-custom-header", :longstr, "custom-value"}
         ],
         routing_key: "test.queue",
@@ -157,32 +153,30 @@ defmodule OpentelemetryBroadwayTest do
     links_list = elem(links, 5)
     assert length(links_list) == 1
     [link] = links_list
-    # Links use integer IDs
     assert elem(link, 1) == trace_id
     assert elem(link, 2) == span_id
   end
 
   test "creates proper trace relationship when propagation enabled" do
     TestHelpers.remove_handlers()
-    :ok = OpentelemetryBroadway.setup(span_relationship: :link)
+    :ok = OpentelemetryBroadway.setup(propagation: true)
 
     # Create parent trace
     parent_span = OpenTelemetry.Tracer.start_span("parent-service")
     OpenTelemetry.Tracer.set_current_span(parent_span)
     parent_ctx = OpenTelemetry.Tracer.current_span_ctx()
-    # span_ctx record: {span_ctx, trace_id, hex_trace_id, span_id, hex_span_id, ...}
-    parent_trace_id = elem(parent_ctx, 1)          # integer trace_id
-    parent_hex_trace_id = elem(parent_ctx, 2)      # hex string trace_id
-    parent_span_id = elem(parent_ctx, 3)           # integer span_id
-    parent_hex_span_id = elem(parent_ctx, 4)       # hex string span_id
+    parent_trace_id = elem(parent_ctx, 1)
+    hex_parent_trace_id = elem(parent_ctx, 2)
+    parent_span_id = elem(parent_ctx, 3)
+    hex_parent_span_id = elem(parent_ctx, 4)
 
-    # Create traceparent header from parent context using hex strings
-    traceparent = "00-#{parent_hex_trace_id}-#{parent_hex_span_id}-01"
+    # Create traceparent header from parent context
+    traceparent = "00-#{hex_parent_trace_id}-#{hex_parent_span_id}-01"
 
     OpenTelemetry.Tracer.end_span()
     OpenTelemetry.Ctx.clear()
 
-    # Consume parent span (span record uses integer IDs)
+    # Consume parent span
     assert_receive {:span, span(name: "parent-service", trace_id: ^parent_trace_id, span_id: ^parent_span_id)}
 
     # Create message with propagated context
@@ -227,15 +221,15 @@ defmodule OpentelemetryBroadwayTest do
     links_list = elem(links, 5)
     assert length(links_list) == 1
     [link] = links_list
-    # Link points to parent trace (integer IDs)
+    # Link points to parent trace
     assert elem(link, 1) == parent_trace_id
-    # Link points to parent span (integer IDs)
+    # Link points to parent span
     assert elem(link, 2) == parent_span_id
   end
 
   test "handles message without headers gracefully with propagation enabled" do
     TestHelpers.remove_handlers()
-    :ok = OpentelemetryBroadway.setup(span_relationship: :link)
+    :ok = OpentelemetryBroadway.setup(propagation: true)
 
     message = %Broadway.Message{
       data: "test message",
@@ -280,7 +274,7 @@ defmodule OpentelemetryBroadwayTest do
 
   test "handles malformed headers gracefully with propagation enabled" do
     TestHelpers.remove_handlers()
-    :ok = OpentelemetryBroadway.setup(span_relationship: :link)
+    :ok = OpentelemetryBroadway.setup(propagation: true)
 
     message = %Broadway.Message{
       data: "test message",
@@ -331,5 +325,208 @@ defmodule OpentelemetryBroadwayTest do
     # No valid trace context should result in no links
     links_list = elem(links, 5)
     assert length(links_list) == 0
+  end
+
+  test "handles SQS metadata with empty list attributes" do
+    TestHelpers.remove_handlers()
+    :ok = OpentelemetryBroadway.setup(propagation: true)
+
+    # SQS returns empty lists [] instead of empty maps %{} when no attributes exist
+    message = %Broadway.Message{
+      data: "sqs message",
+      metadata: %{
+        attributes: [],
+        message_id: "a59662d4-76c5-43f7-8a80-5f9749038741",
+        message_attributes: [],
+        md5_of_body: "3fbc4efbd123b952ace9b008b844b800",
+        receipt_handle: "AQEBzefW2cSz0tC2w7trdXpCSqQWD5zieIGDLzLU4aRS..."
+      },
+      acknowledger: {Broadway.NoopAcknowledger, nil, nil}
+    }
+
+    start_metadata = %{
+      processor_key: :default,
+      topology_name: :sqs_topology,
+      name: :"sqs_topology.Broadway.Consumer_0",
+      message: message
+    }
+
+    :telemetry.execute(
+      [:broadway, :processor, :message, :start],
+      %{},
+      start_metadata
+    )
+
+    completed_message = %{message | status: :ok}
+
+    :telemetry.execute(
+      [:broadway, :processor, :message, :stop],
+      %{},
+      %{message: completed_message}
+    )
+
+    assert_receive {:span, span(name: span_name, attributes: attributes, links: links)}
+
+    assert span_name == ":sqs_topology/default process"
+
+    attrs_map = :otel_attributes.map(attributes)
+    assert attrs_map[:"messaging.system"] == :broadway
+
+    links_list = elem(links, 5)
+    assert length(links_list) == 0
+  end
+
+  test "extracts trace context from SQS message_attributes" do
+    TestHelpers.remove_handlers()
+    :ok = OpentelemetryBroadway.setup(propagation: true)
+
+    _parent_span_ctx =
+      OpenTelemetry.Tracer.start_span("sqs-producer")
+      |> OpenTelemetry.Tracer.set_current_span()
+
+    trace_ctx = OpenTelemetry.Tracer.current_span_ctx()
+    trace_id = elem(trace_ctx, 1)
+    hex_trace_id = elem(trace_ctx, 2)
+    span_id = elem(trace_ctx, 3)
+    hex_span_id = elem(trace_ctx, 4)
+
+    OpenTelemetry.Tracer.end_span()
+    OpenTelemetry.Ctx.clear()
+
+    assert_receive {:span, span(name: "sqs-producer")}
+
+    traceparent = "00-#{hex_trace_id}-#{hex_span_id}-01"
+
+    # Real SQS metadata structure from ExAws.SQS with all message attribute types:
+    # - String: regular string values
+    # - String.custom: string with custom type suffix
+    # - Number: numeric values (stored as string_value)
+    # - Binary: binary data (base64 encoded in binary_value)
+    message = %Broadway.Message{
+      data: "sqs message with trace",
+      metadata: %{
+        attributes: %{
+          "ApproximateFirstReceiveTimestamp" => 1_700_000_000_000,
+          "ApproximateReceiveCount" => 1,
+          "SenderId" => "AROAEXAMPLEID:test-service",
+          "SentTimestamp" => 1_700_000_000_000
+        },
+        message_id: "734ec1f6-479c-4add-b369-8cfdf1b20be0",
+        md5_of_body: "c08bbff48213759b9cd06a03f9abe844",
+        message_attributes: %{
+          # W3C Trace Context header for propagation
+          "traceparent" => %{
+            name: "traceparent",
+            data_type: "String",
+            value: traceparent,
+            string_value: traceparent,
+            binary_value: ""
+          },
+          # String with custom type suffix
+          "EventType" => %{
+            name: "EventType",
+            data_type: "String.application/json",
+            value: "order.created",
+            string_value: "order.created",
+            binary_value: ""
+          },
+          # Number type (value is parsed, string_value has original)
+          "RetryCount" => %{
+            name: "RetryCount",
+            data_type: "Number",
+            value: 3,
+            string_value: "3",
+            binary_value: ""
+          },
+          # Binary type (base64 encoded)
+          "Signature" => %{
+            name: "Signature",
+            data_type: "Binary",
+            value: "binarydata",
+            string_value: "",
+            binary_value: "YmluYXJ5ZGF0YQ=="
+          }
+        },
+        receipt_handle: "AQEBVeGALM2wkdaRfuNjxHDJOf0ZtflVnwvNB9hNL8..."
+      },
+      acknowledger: {Broadway.NoopAcknowledger, nil, nil}
+    }
+
+    start_metadata = %{
+      processor_key: :default,
+      topology_name: :sqs_topology,
+      name: :"sqs_topology.Broadway.Consumer_0",
+      message: message
+    }
+
+    :telemetry.execute(
+      [:broadway, :processor, :message, :start],
+      %{},
+      start_metadata
+    )
+
+    completed_message = %{message | status: :ok}
+
+    :telemetry.execute(
+      [:broadway, :processor, :message, :stop],
+      %{},
+      %{message: completed_message}
+    )
+
+    assert_receive {:span, span(name: span_name, links: links)}
+
+    assert span_name == ":sqs_topology/default process"
+
+    links_list = elem(links, 5)
+    assert length(links_list) == 1
+    [link] = links_list
+    assert elem(link, 1) == trace_id
+    assert elem(link, 2) == span_id
+  end
+
+  # Backwards compatibility tests for deprecated `propagation` option
+  describe "backwards compatibility" do
+    test "propagation: false disables context propagation" do
+      TestHelpers.remove_handlers()
+      :ok = OpentelemetryBroadway.setup(propagation: false)
+
+      _parent_span_ctx =
+        OpenTelemetry.Tracer.start_span("upstream-service")
+        |> OpenTelemetry.Tracer.set_current_span()
+
+      # Create headers with trace context
+      headers = create_rabbitmq_headers_with_trace_context()
+
+      ref =
+        Broadway.test_message(TestBroadway, "success", metadata: %{headers: headers, delivery_tag: 12345})
+
+      assert_receive {:ack, ^ref, [%{data: "success"}], []}
+
+      # Should not have parent-child relationship when propagation: false
+      assert_receive {:span, span(parent_span_id: :undefined, links: links)}
+
+      # Should not have any links when propagation: false
+      links_list = elem(links, 5)
+      assert length(links_list) == 0
+    end
+
+    test "raises error when both propagation and span_relationship are provided" do
+      TestHelpers.remove_handlers()
+
+      assert_raise ArgumentError,
+                   "cannot use both :propagation and :span_relationship options. " <>
+                     "Please use :span_relationship only as :propagation is deprecated",
+                   fn ->
+                     OpentelemetryBroadway.setup(propagation: true, span_relationship: :none)
+                   end
+    end
+  end
+
+  defp create_rabbitmq_headers_with_trace_context do
+    trace_ctx = OpenTelemetry.Tracer.current_span_ctx()
+    hex_trace_id = elem(trace_ctx, 2)
+    hex_span_id = elem(trace_ctx, 4)
+
+    [{"traceparent", :longstr, "00-#{hex_trace_id}-#{hex_span_id}-01"}]
   end
 end
