@@ -66,14 +66,13 @@ defmodule OpentelemetryNebulex do
 
   @doc false
   def handle_command_start(_event, _measurements, metadata, _config) do
-    operation = db_operation(metadata)
-    span_name = span_name(operation)
+    span_name = "nebulex #{db_operation(metadata)}"
 
     attributes =
       %{
         NebulexAttributes.nebulex_cache() => metadata.adapter_meta.cache,
         DBAttributes.db_system() => db_system(metadata),
-        DBAttributes.db_operation_name() => operation,
+        DBAttributes.db_operation_name() => db_operation(metadata),
         DBAttributes.db_query_text() => db_statement(metadata)
       }
       |> maybe_put(NebulexAttributes.nebulex_keyslot(), metadata.adapter_meta[:keyslot])
@@ -107,9 +106,6 @@ defmodule OpentelemetryNebulex do
 
   defp maybe_put(attributes, _key, nil), do: attributes
   defp maybe_put(attributes, key, value), do: Map.put(attributes, key, value)
-
-  defp span_name(nil), do: "nebulex"
-  defp span_name(operation), do: "nebulex #{operation}"
 
   defp extract_action(%{result: :"$expired"} = metadata) do
     if db_operation(metadata) in [:get, :take], do: :miss
