@@ -107,18 +107,9 @@ defmodule OpentelemetryNebulex do
   defp maybe_put(attributes, _key, nil), do: attributes
   defp maybe_put(attributes, key, value), do: Map.put(attributes, key, value)
 
-  defp extract_action(%{result: :"$expired"} = metadata) do
-    if db_operation(metadata) in [:get, :take], do: :miss
-  end
-
-  defp extract_action(%{result: nil} = metadata) do
-    if db_operation(metadata) in [:get, :take], do: :miss
-  end
-
-  defp extract_action(%{result: _} = metadata) do
-    if db_operation(metadata) in [:get, :take], do: :hit
-  end
-
+  defp extract_action(%{function_name: f, result: :"$expired"}) when f in [:get, :take], do: :miss
+  defp extract_action(%{function_name: f, result: nil}) when f in [:get, :take], do: :miss
+  defp extract_action(%{function_name: f, result: _}) when f in [:get, :take], do: :hit
   defp extract_action(_), do: nil
 
   defp format_error(exception) when is_exception(exception), do: Exception.message(exception)
