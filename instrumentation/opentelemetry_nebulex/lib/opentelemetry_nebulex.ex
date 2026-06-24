@@ -8,6 +8,7 @@ defmodule OpentelemetryNebulex do
   alias OpentelemetryNebulex.NebulexAttributes
 
   @tracer_id __MODULE__
+  @statement_key_limit 10
 
   @doc """
   Initializes and configures telemetry handlers for a given cache.
@@ -65,13 +66,14 @@ defmodule OpentelemetryNebulex do
 
   @doc false
   def handle_command_start(_event, _measurements, metadata, _config) do
-    span_name = "nebulex #{metadata.function_name}"
+    operation = db_operation(metadata)
+    span_name = span_name(operation)
 
     attributes =
       %{
         NebulexAttributes.nebulex_cache() => metadata.adapter_meta.cache,
-        DBAttributes.db_system() => metadata.adapter_meta[:backend],
-        DBAttributes.db_operation_name() => db_operation(metadata),
+        DBAttributes.db_system() => db_system(metadata),
+        DBAttributes.db_operation_name() => operation,
         DBAttributes.db_query_text() => db_statement(metadata)
       }
       |> maybe_put(NebulexAttributes.nebulex_keyslot(), metadata.adapter_meta[:keyslot])
@@ -106,18 +108,101 @@ defmodule OpentelemetryNebulex do
   defp maybe_put(attributes, _key, nil), do: attributes
   defp maybe_put(attributes, key, value), do: Map.put(attributes, key, value)
 
-  defp extract_action(%{function_name: f, result: :"$expired"}) when f in [:get, :take], do: :miss
-  defp extract_action(%{function_name: f, result: nil}) when f in [:get, :take], do: :miss
-  defp extract_action(%{function_name: f, result: _}) when f in [:get, :take], do: :hit
+  defp span_name(nil), do: "nebulex"
+  defp span_name(operation), do: "nebulex #{operation}"
+
+  defp extract_action(%{result: :"$expired"} = metadata) do
+    if db_operation(metadata) in [:get, :take], do: :miss
+  end
+
+  defp extract_action(%{result: nil} = metadata) do
+    if db_operation(metadata) in [:get, :take], do: :miss
+  end
+
+  defp extract_action(%{result: _} = metadata) do
+    if db_operation(metadata) in [:get, :take], do: :hit
+  end
+
   defp extract_action(_), do: nil
 
   defp format_error(exception) when is_exception(exception), do: Exception.message(exception)
   defp format_error(error), do: inspect(error)
 
+  defp db_system(%{adapter_meta: %{adapter: adapter}} = metadata) do
+    db_system(adapter, metadata.adapter_meta)
+  end
+
+  defp db_system(%{adapter_meta: adapter_meta}) do
+    adapter_meta[:backend]
+  end
+
+  defp db_system(adapter, _adapter_meta)
+       when adapter in [Nebulex.Adapters.Redis, NebulexRedisAdapter],
+       do: :redis
+
+  defp db_system(_adapter, %{backend: backend}), do: backend
+  defp db_system(_adapter, _adapter_meta), do: nil
+
   defp db_operation(%{function_name: operation}), do: operation
+  defp db_operation(%{command: :fetch}), do: :get
+  defp db_operation(%{command: :execute, args: [%{op: operation} | _tail]}), do: operation
+  defp db_operation(%{command: operation}), do: operation
   defp db_operation(_), do: nil
 
-  defp db_statement(%{function_name: :get, args: [key]}), do: "GET #{inspect(key)}"
-  defp db_statement(%{function_name: :put, args: [key | _tail]}), do: "PUT #{inspect(key)}"
-  defp db_statement(_), do: nil
+  defp db_statement(%{args: args} = metadata) do
+    case {db_operation(metadata), args} do
+      {:get, [key | _tail]} ->
+        "GET #{inspect(key)}"
+
+      {:put, [key | _tail]} ->
+        "PUT #{inspect(key)}"
+
+      {:get_all, args} ->
+        "MGET #{statement_keys(get_all_keys(args))}"
+
+      {:put_all, args} ->
+        "#{put_all_statement_command(args)} #{statement_keys(put_all_keys(args))}"
+
+      _ ->
+        nil
+    end
+  end
+
+  defp db_statement(_metadata), do: nil
+
+  defp get_all_keys([%{query: {:in, keys}} | _tail]), do: keys
+  defp get_all_keys([[{:in, keys} | _tail] | _args]), do: keys
+  defp get_all_keys([[keys] | _args]) when is_list(keys), do: keys
+  defp get_all_keys([keys | _args]) when is_list(keys), do: keys
+  defp get_all_keys(_args), do: []
+
+  defp put_all_keys([entries | _args]) when is_map(entries) do
+    Stream.map(entries, &entry_key/1)
+  end
+
+  defp put_all_keys([entries | _args]) when is_list(entries) do
+    Stream.map(entries, &entry_key/1)
+  end
+
+  defp put_all_keys(_args), do: []
+
+  defp entry_key({key, _value}), do: key
+  defp entry_key(key), do: key
+
+  defp put_all_statement_command([_entries, :put_new | _tail]), do: "MSETNX"
+  defp put_all_statement_command(_args), do: "MSET"
+
+  defp statement_keys(keys) do
+    keys = Enum.take(keys, @statement_key_limit + 1)
+    {keys, rest} = Enum.split(keys, @statement_key_limit)
+
+    keys =
+      keys
+      |> Enum.map(&inspect/1)
+      |> Enum.join(", ")
+
+    suffix = if rest == [], do: "", else: ", ..."
+
+    "[#{keys}#{suffix}]"
+  end
 end
